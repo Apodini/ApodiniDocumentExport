@@ -8,36 +8,158 @@ SPDX-License-Identifier: MIT
 
 -->
 
-## How to use this repository
-### Template
+# Apodini Document Export
 
-When creating a new repository, make sure to select this repository as a repository template.
+[![Build](https://github.com/Apodini/ApodiniDocumentExport/actions/workflows/build.yml/badge.svg)](https://github.com/Apodini/ApodiniDocumentExport/actions/workflows/build.yml)
+[![codecov](https://codecov.io/gh/Apodini/ApodiniDocumentExport/branch/develop/graph/badge.svg?token=5MMKMPO5NR)](https://codecov.io/gh/Apodini/ApodiniDocumentExport)
 
-### Customize the repository
+Create a document to store knowledge on your Apodini web service and export it in a local directory or expose a new endpoint.
 
-Enter your repository-specific configuration
-- Replace the "Package.swift", "Sources" and "Tests" folder with your Swift Package
-- Enter the correct Swift Package name (currently "ApodiniTemplate") in the build.yml, pull_request.yml and release.yml files.
-- Update the DocC documentation to reflect the name of the new Swift package and adapt the docs and build and test GitHub Actions where the documentation is generated to the updated names to be sure the DocC generation works as expected 
-- Update the README with your information and replace the links to the license with the new repository.
-- Update the status badges to point to the GitHub actions of your repository.
-- If you create a new repository in the Apodini organization, you do not need to add a personal access token named "ACCESS_TOKEN". If you create the repo outside the Apodini organization, you need to create such a token with write access to the repo for all GitHub Actions to work. You will need to give the `ApodiniBot` user write access to the repository.
+> Tip: See `ApodiniSustainability` and `ApodiniMigration` as references to start with your implementation of this use case.
 
-### ⬆️ Remove everything up to here ⬆️
+## Getting Started
 
-# Project Name
+### Dependency
 
-[![Build](https://github.com/Apodini/Template-Repository/actions/workflows/build.yml/badge.svg)](https://github.com/Apodini/Template-Repository/actions/workflows/build.yml)
-[![codecov](https://codecov.io/gh/Apodini/Template-Repository/branch/develop/graph/badge.svg?token=5MMKMPO5NR)](https://codecov.io/gh/Apodini/Template-Repository)
+Add `ApodiniDocumentExport` product to your target dependencies in `package.swift`: 
+```swift
+.product(name: "ApodiniDocumentExport", package: "Apodini")
+```
 
-## Requirements
+### Documents
 
-## Installation/Setup/Integration
+The structure of your document is unique to your use case. You may use the `Value` protocol to require conformance to `Codable` and `Hashable`.
 
-## Usage
+```swift
+/// A document that describes an Apodini Web Service
+public struct Document: Value {
+    <#code#>
+}
+```
+
+### Export Options
+
+`ExportOptions` provides a protocol to specify the document's `format` and optional `directory` and `endpoint` properties. `ApodiniDocumentExport` supports `.json` and `.yaml` format. You may use `ArgumentParser` to enable command line arguments.
+
+```swift
+struct DocumentExportOptions: ExportOptions {
+    /// A path to a local directory used to export document
+    @Option(name: .customLong("directory"), help: "A path to a local directory to export document")
+    public var directory: String?
+    /// An endpoint path of the web service used to expose document
+    @Option(name: .customLong("endpoint"), help: "A path to an endpoint of the web service to expose document")
+    public var endpoint: String?
+    /// Format of the document export
+    ///
+    /// Supports `json` or `yaml` format.
+    /// - Note: Defaults to `json`
+    @Option(name: .customLong("format"), help: "Format of the document, either `json` or `yaml`")
+    public var format: FileFormat = .json
+    
+    /// Creates an instance of this parsable type using the definitions given by each property’s wrapper.
+    public init() {}
+}
+```
+
+### Interface Exporter
+
+Apodini enables you to build a new ``InterfaceExporter`` to collect information on your web service and initialize a `document` instance. This implementation of ``InterfaceExporter/finishedExporting(_:)`` shows how to use `ApodiniDocumentExport` to write a document to a local directory or expose a new endpoint.
+
+```swift
+final class DocumentInterfaceExporter: InterfaceExporter {
+    
+    private let app: Application
+    private let configuration: DocumentConfiguration
+    private let logger = Logger(label: <#String#>)
+    
+    init(_ app: Application, configuration: DocumentConfiguration) {
+        self.app = app
+        self.configuration = configuration
+    }
+    
+    func export<H>(_ endpoint: Apodini.Endpoint<H>) -> () where H : Handler {
+        <#code#>
+    }
+    
+    func export<H>(blob endpoint: Apodini.Endpoint<H>) -> () where H : Handler, H.Response.Content == Blob {
+        <#code#>
+    }
+    
+    func finishedExporting(_ webService: WebServiceModel) {
+        
+        app.storage.set(DocumentStorageKey.self, to: document)
+        
+        guard let options = configuration.exportOptions else {
+            return logger.notice("No configuration provided to handle document")
+        }
+            
+        if let directory = options.directory {
+            do {
+                let filePath = try document.write(at: directory, outputFormat: options.format)
+                logger.info("Document exported at \(filePath) in \(options.format.rawValue)")
+            } catch {
+                logger.error("Document export at \(directory) failed with error: \(error)")
+            }
+        }
+        
+        if let endpoint = options.endpoint {
+            app.httpServer.registerRoute(.GET, endpoint.httpPathComponents) { _ -> String in
+                options.format.string(of: document)
+            }
+            logger.info("Document served at \(endpoint) in \(options.format.rawValue) format")
+        }
+    }
+}
+```
+
+### Document Configuration
+
+Create a ``Apodini/Configuration`` and use ``Application/registerExporter(exporter:)`` to register your ``InterfaceExporter`` implementation with the ``Application``.
+
+```swift
+public class DocumentConfiguration: Configuration {
+    
+    let exportOptions: DocumentExportOptions?
+    
+    /// Initializer for a ``DocumentConfiguration`` instance
+    /// - Parameter exportOptions: Export options of the document
+    public init(_ exportOptions: DocumentExportOptions? = nil) {
+        self.exportOptions = exportOptions
+    }
+    
+    /// Configures `app` by registering the ``InterfaceExporter`` that handles document export
+    /// - Parameter app: Application instance to register the configuration in Apodini
+    public func configure(_ app: Application) {
+        app.registerExporter(exporter: DocumentInterfaceExporter(app, configuration: self))
+    }
+}
+
+public extension WebService {
+    /// A typealias for ``DocumentConfiguration``
+    typealias Document = DocumentConfiguration
+}
+```
+
+This example shows how to use the implementation in your Apodini web service `configuration`.
+
+```swift
+struct HelloWorld: WebService {
+    
+    @OptionGroup
+    var options: DocumentExportOptions
+    
+    var configuration: Configuration {
+        Document(options)
+    }
+
+    var content: some Component {
+        Greeter()
+    }
+}
+```
 
 ## Contributing
 Contributions to this project are welcome. Please make sure to read the [contribution guidelines](https://github.com/Apodini/.github/blob/main/CONTRIBUTING.md) and the [contributor covenant code of conduct](https://github.com/Apodini/.github/blob/main/CODE_OF_CONDUCT.md) first.
 
 ## License
-This project is licensed under the MIT License. See [Licenses](https://github.com/Apodini/Template-Repository/tree/develop/LICENSES) for more information.
+This project is licensed under the MIT License. See [Licenses](https://github.com/Apodini/ApodiniDocumentExport/tree/develop/LICENSES) for more information.
